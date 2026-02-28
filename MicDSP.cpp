@@ -108,6 +108,7 @@ bool MicDSP::initVAD()
     return true;
 }
 
+// ---------------- READ ----------------
 esp_err_t MicDSP::read(int16_t *output,
                        size_t samples,
                        size_t *samples_read,
@@ -115,17 +116,20 @@ esp_err_t MicDSP::read(int16_t *output,
                        bool agcEnabled,
                        TickType_t ticks_to_wait)
 {
-    // ---- Validate frame size ----
-    if (samples < 160 || samples > 1600 || samples % 160 != 0) {
-        Serial.println("MicDSP ERROR: samples must be multiple of 160 (160–1600)");
+    size_t fs = frameSize();
+
+    // Validate frame size as multiple of 10ms
+    if (samples < fs || samples > fs * 10 || samples % fs != 0) {
+        Serial.printf("MicDSP ERROR: samples must be multiple of frame size %d (%d–%d)\n",
+                      (int)fs, (int)fs, (int)(fs*10));
         return ESP_ERR_INVALID_ARG;
     }
 
-    const size_t frames = samples / 160;
-    
-    // Use a buffer large enough for the entire request to do ONE I2S read
-    static int32_t raw32_bus[1600]; 
-    static int16_t nsIn[160];
+    size_t frames = samples / fs;
+
+    // Temporary buffers
+    static int32_t raw32_bus[1600 * 3]; // max frame size 48kHz ~ 480 samples * 10
+    static int16_t nsIn[480];           // max single frame for 48kHz
 
     size_t bytesRead = 0;
     esp_err_t err = i2s_read(_port,
@@ -133,39 +137,37 @@ esp_err_t MicDSP::read(int16_t *output,
                              samples * sizeof(int32_t),
                              &bytesRead,
                              ticks_to_wait);
-    
     if (err != ESP_OK) return err;
 
     size_t actualSamplesRead = bytesRead / sizeof(int32_t);
     size_t speechFrames = 0;
-    size_t processedFrames = actualSamplesRead / 160;
+    size_t processedFrames = actualSamplesRead / fs;
 
     for (size_t f = 0; f < processedFrames; f++) {
-        size_t offset = f * 160;
+        size_t offset = f * fs;
         int16_t* frameOut = &output[offset];
 
-        // 32 → 16 conversion for this 10ms chunk
-        for (size_t i = 0; i < 160; i++)
+        // 32 -> 16 conversion for this frame
+        for (size_t i = 0; i < fs; i++)
             nsIn[i] = (int16_t)(raw32_bus[offset + i] >> 8);
 
-        // Prepare pointers for WebRTC modules
-        int16_t* nsInPtr[1]  = { nsIn };
-        int16_t* nsOutPtr[1] = { frameOut }; // Correctly initialized here
+        int16_t* nsInPtr[1] = { nsIn };
+        int16_t* nsOutPtr[1] = { frameOut };
 
-        // ---- Noise Suppression ----
+        // NS
         WebRtcNs_Analyze(_ns, nsIn);
-        WebRtcNs_Process(_ns, (const int16_t *const *)nsInPtr, 1, nsOutPtr);
+        WebRtcNs_Process(_ns, (const int16_t* const*)nsInPtr, 1, nsOutPtr);
 
-        // ---- AGC ----
+        // AGC
         if (agcEnabled) {
             int32_t inMicLevel = 0, outMicLevel = 0;
             uint8_t saturationWarning = 0;
             int16_t echo = 0;
 
             WebRtcAgc_Process(_agc,
-                              (const int16_t *const *)nsOutPtr,
+                              (const int16_t* const*)nsOutPtr,
                               1,
-                              160,
+                              fs,
                               nsOutPtr,
                               inMicLevel,
                               &outMicLevel,
@@ -173,17 +175,15 @@ esp_err_t MicDSP::read(int16_t *output,
                               &saturationWarning);
         }
 
-        // ---- Frame VAD ----
-        if (fvad_process(_fvad, frameOut, 160) == 1)
+        // VAD
+        if (fvad_process(_fvad, frameOut, fs) == 1)
             speechFrames++;
     }
 
-    // ---- Calculate VAD Percentage ----
-    if (vad) {
-        // True if more than 50% of the successfully processed frames are speech
-        *vad = (processedFrames > 0) && 
+    // VAD percentage
+    if (vad)
+        *vad = (processedFrames > 0) &&
                (((float)speechFrames / (float)processedFrames) > 0.50f);
-    }
 
     if (samples_read)
         *samples_read = actualSamplesRead;
