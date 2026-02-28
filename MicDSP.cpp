@@ -108,7 +108,6 @@ bool MicDSP::initVAD()
     return true;
 }
 
-// ---------------- READ ----------------
 esp_err_t MicDSP::read(int16_t *output,
                        size_t samples,
                        size_t *samples_read,
@@ -116,57 +115,78 @@ esp_err_t MicDSP::read(int16_t *output,
                        bool agcEnabled,
                        TickType_t ticks_to_wait)
 {
-    static int32_t raw32[FRAME_SIZE];
-    static int16_t nsIn[FRAME_SIZE];
+    // ---- Validate frame size ----
+    if (samples < 160 || samples > 1600 || samples % 160 != 0) {
+        Serial.println("MicDSP ERROR: samples must be multiple of 160 (160–1600)");
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    int16_t* nsInPtr[1]  = { nsIn };
-    int16_t* nsOutPtr[1] = { output };
+    const size_t frames = samples / 160;
+    
+    // Use a buffer large enough for the entire request to do ONE I2S read
+    static int32_t raw32_bus[1600]; 
+    static int16_t nsIn[160];
 
     size_t bytesRead = 0;
     esp_err_t err = i2s_read(_port,
-                             raw32,
+                             raw32_bus,
                              samples * sizeof(int32_t),
                              &bytesRead,
                              ticks_to_wait);
-    if (err != ESP_OK) {
-        Serial.println("MicDSP ERROR: i2s_read failed");
-        return err;
+    
+    if (err != ESP_OK) return err;
+
+    size_t actualSamplesRead = bytesRead / sizeof(int32_t);
+    size_t speechFrames = 0;
+    size_t processedFrames = actualSamplesRead / 160;
+
+    for (size_t f = 0; f < processedFrames; f++) {
+        size_t offset = f * 160;
+        int16_t* frameOut = &output[offset];
+
+        // 32 → 16 conversion for this 10ms chunk
+        for (size_t i = 0; i < 160; i++)
+            nsIn[i] = (int16_t)(raw32_bus[offset + i] >> 8);
+
+        // Prepare pointers for WebRTC modules
+        int16_t* nsInPtr[1]  = { nsIn };
+        int16_t* nsOutPtr[1] = { frameOut }; // Correctly initialized here
+
+        // ---- Noise Suppression ----
+        WebRtcNs_Analyze(_ns, nsIn);
+        WebRtcNs_Process(_ns, (const int16_t *const *)nsInPtr, 1, nsOutPtr);
+
+        // ---- AGC ----
+        if (agcEnabled) {
+            int32_t inMicLevel = 0, outMicLevel = 0;
+            uint8_t saturationWarning = 0;
+            int16_t echo = 0;
+
+            WebRtcAgc_Process(_agc,
+                              (const int16_t *const *)nsOutPtr,
+                              1,
+                              160,
+                              nsOutPtr,
+                              inMicLevel,
+                              &outMicLevel,
+                              echo,
+                              &saturationWarning);
+        }
+
+        // ---- Frame VAD ----
+        if (fvad_process(_fvad, frameOut, 160) == 1)
+            speechFrames++;
     }
 
-    size_t count = bytesRead / sizeof(int32_t);
-
-    // Convert 32 -> 16
-    for (size_t i = 0; i < count; i++)
-        nsIn[i] = (int16_t)(raw32[i] >> 8);
-
-    // NS
-    WebRtcNs_Analyze(_ns, nsIn);
-    WebRtcNs_Process(_ns,
-                     (const int16_t *const *)nsInPtr,
-                     1,
-                     nsOutPtr);
-
-    // AGC (toggle per read)
-    if (agcEnabled) {
-        int32_t inMicLevel = 0, outMicLevel = 0;
-        uint8_t saturationWarning = 0;
-        int16_t echo = 0;
-
-        WebRtcAgc_Process(_agc,
-                          (const int16_t *const *)nsOutPtr,
-                          1,
-                          count,
-                          (int16_t *const *)nsOutPtr,
-                          inMicLevel,
-                          &outMicLevel,
-                          echo,
-                          &saturationWarning);
+    // ---- Calculate VAD Percentage ----
+    if (vad) {
+        // True if more than 50% of the successfully processed frames are speech
+        *vad = (processedFrames > 0) && 
+               (((float)speechFrames / (float)processedFrames) > 0.50f);
     }
 
-    // VAD
-    if (vad)
-        *vad = (fvad_process(_fvad, output, count) == 1);
+    if (samples_read)
+        *samples_read = actualSamplesRead;
 
-    if (samples_read) *samples_read = count;
     return ESP_OK;
 }
