@@ -1,0 +1,36 @@
+# Syntax highlighting for ESP32-SpeexDSP library
+
+# Classes
+ESP32SpeexDSP	KEYWORD1
+
+# Methods
+beginAEC	KEYWORD2
+processAEC	KEYWORD2
+beginPreprocess	KEYWORD2
+enableNoiseSuppression	KEYWORD2
+enableAGC	KEYWORD2
+enableVAD	KEYWORD2
+isVoiceDetected	KEYWORD2
+preprocessAudio	KEYWORD2
+beginJitterBuffer	KEYWORD2
+putJitterPacket	KEYWORD2
+getJitterPacket	KEYWORD2
+beginResampler	KEYWORD2
+resample	KEYWORD2
+beginBuffer	KEYWORD2
+writeBuffer	KEYWORD2
+readBuffer	KEYWORD2
+computeRMS	KEYWORD2
+getEchoState	KEYWORD2
+getPreprocessState	KEYWORD2
+getJitterBuffer	KEYWORD2
+getResamplerState	KEYWORD2
+getBufferState	KEYWORD2
+
+# Constants
+SAMPLE_RATE	LITERAL1
+FRAME_SIZE	LITERAL1
+FILTER_LENGTH	LITERAL1
+BUFFER_SIZE	LITERAL1
+JITTER_STEP_MS	LITERAL1
+RESAMPLE_RATE	LITERAL1
