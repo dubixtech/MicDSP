@@ -1,9 +1,14 @@
 #include "MicDSP.h"
 
-#define FRAME_SIZE 160   // 10ms @16kHz
-
+// ---------------- LOG ----------------
 void MicDSP::log(const char* msg) {
     Serial.println(msg);
+}
+
+// ---------------- FRAME SIZE ----------------
+// Returns number of samples per 10ms frame
+size_t MicDSP::frameSize() const {
+    return _sampleRate / 100; // 10ms frame
 }
 
 // ---------------- BEGIN ----------------
@@ -22,11 +27,15 @@ bool MicDSP::begin(i2s_port_t port,
         return false;
     }
 
-    log("MicDSP: Purging initial DC offset (200ms)...");
+    // Purge initial DC offset (200ms)
+    size_t fs = frameSize();
     size_t bytes_discarded = 0;
-    int32_t dummy_buf[FRAME_SIZE];
-    for (int i = 0; i < 20; i++)
-        i2s_read(_port, dummy_buf, sizeof(dummy_buf), &bytes_discarded, portMAX_DELAY);
+    int32_t* dummy_buf = new int32_t[fs];
+    int loops = 200 / 10; // 200ms / 10ms
+    log("MicDSP: Purging initial DC offset (200ms)...");
+    for (int i = 0; i < loops; i++)
+        i2s_read(_port, dummy_buf, fs * sizeof(int32_t), &bytes_discarded, portMAX_DELAY);
+    delete[] dummy_buf;
 
     if (!initNS())   { log("MicDSP ERROR: NS init failed"); return false; }
     if (!initAGC())  { log("MicDSP ERROR: AGC init failed"); return false; }
@@ -39,6 +48,8 @@ bool MicDSP::begin(i2s_port_t port,
 // ---------------- I2S ----------------
 bool MicDSP::initI2S(int bclkPin, int wsPin, int dataPin)
 {
+    size_t fs = frameSize();
+
     i2s_config_t config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
         .sample_rate = _sampleRate,
@@ -47,7 +58,7 @@ bool MicDSP::initI2S(int bclkPin, int wsPin, int dataPin)
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = 8,
-        .dma_buf_len = FRAME_SIZE,
+        .dma_buf_len = fs,
         .use_apll = false
     };
 
@@ -118,18 +129,18 @@ esp_err_t MicDSP::read(int16_t *output,
 {
     size_t fs = frameSize();
 
-    // Validate frame size as multiple of 10ms
+    // Validate sample count: must be multiple of 10ms frame
     if (samples < fs || samples > fs * 10 || samples % fs != 0) {
-        Serial.printf("MicDSP ERROR: samples must be multiple of frame size %d (%d–%d)\n",
-                      (int)fs, (int)fs, (int)(fs*10));
+        Serial.printf("MicDSP ERROR: samples %d invalid, must be multiple of frame size %d (%d–%d)\n",
+                      (int)samples, (int)fs, (int)fs, (int)(fs*10));
         return ESP_ERR_INVALID_ARG;
     }
 
     size_t frames = samples / fs;
 
     // Temporary buffers
-    static int32_t raw32_bus[1600 * 3]; // max frame size 48kHz ~ 480 samples * 10
-    static int16_t nsIn[480];           // max single frame for 48kHz
+    static int32_t raw32_bus[480 * 10]; // supports up to 48kHz, 10 frames
+    static int16_t nsIn[480];           // max frame at 48kHz
 
     size_t bytesRead = 0;
     esp_err_t err = i2s_read(_port,
@@ -147,14 +158,14 @@ esp_err_t MicDSP::read(int16_t *output,
         size_t offset = f * fs;
         int16_t* frameOut = &output[offset];
 
-        // 32 -> 16 conversion for this frame
+        // Convert 32 -> 16 bit
         for (size_t i = 0; i < fs; i++)
             nsIn[i] = (int16_t)(raw32_bus[offset + i] >> 8);
 
-        int16_t* nsInPtr[1] = { nsIn };
+        int16_t* nsInPtr[1]  = { nsIn };
         int16_t* nsOutPtr[1] = { frameOut };
 
-        // NS
+        // Noise Suppression
         WebRtcNs_Analyze(_ns, nsIn);
         WebRtcNs_Process(_ns, (const int16_t* const*)nsInPtr, 1, nsOutPtr);
 
@@ -180,7 +191,7 @@ esp_err_t MicDSP::read(int16_t *output,
             speechFrames++;
     }
 
-    // VAD percentage
+    // VAD percentage >50% means speech present
     if (vad)
         *vad = (processedFrames > 0) &&
                (((float)speechFrames / (float)processedFrames) > 0.50f);
