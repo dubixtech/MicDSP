@@ -5,11 +5,6 @@ void MicDSP::log(const char* msg) {
     Serial.println(msg);
 }
 
-// ---------------- FRAME SIZE ----------------
-// Returns number of samples per 10ms frame
-size_t MicDSP::frameSize() const {
-    return _sampleRate / 100; // 10ms frame
-}
 
 // ---------------- BEGIN ----------------
 bool MicDSP::begin(i2s_port_t port,
@@ -28,7 +23,7 @@ bool MicDSP::begin(i2s_port_t port,
     }
 
     // Purge initial DC offset (200ms)
-    size_t fs = frameSize();
+    size_t fs = sampleRate / 100;
     size_t bytes_discarded = 0;
     int32_t* dummy_buf = new int32_t[fs];
     int loops = 200 / 10; // 200ms / 10ms
@@ -48,7 +43,7 @@ bool MicDSP::begin(i2s_port_t port,
 // ---------------- I2S ----------------
 bool MicDSP::initI2S(int bclkPin, int wsPin, int dataPin)
 {
-    size_t fs = frameSize();
+    size_t fs = sampleRate / 100;
 
     i2s_config_t config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
@@ -127,7 +122,7 @@ esp_err_t MicDSP::read(int16_t *output,
                        bool agcEnabled,
                        TickType_t ticks_to_wait)
 {
-    size_t fs = frameSize();
+    size_t fs = sampleRate / 100;
 
     // Validate sample count: must be multiple of 10ms frame
     if (samples < fs || samples > fs * 10 || samples % fs != 0) {
@@ -199,5 +194,6 @@ esp_err_t MicDSP::read(int16_t *output,
 
     return ESP_OK;
 }
+
 
 
