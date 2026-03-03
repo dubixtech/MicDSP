@@ -9,7 +9,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-
+#include "fvad.h"
 #include <stdlib.h>
 #include "vad/vad_core.h"
 
