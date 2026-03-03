@@ -169,7 +169,7 @@ esp_err_t MicDSP::read(int16_t *output,
         WebRtcNs_Analyze(_ns, nsIn);
         WebRtcNs_Process(_ns, (const int16_t* const*)nsInPtr, 1, nsOutPtr);
  // VAD
-        if (fvad_process(_fvad, frameOut, fs) == 1)
+        if (vad && fvad_process(_fvad, frameOut, fs) == 1)
             speechFrames++;
         // AGC
         if (agcEnabled) {
@@ -199,4 +199,5 @@ esp_err_t MicDSP::read(int16_t *output,
 
     return ESP_OK;
 }
+
 
