@@ -168,7 +168,9 @@ esp_err_t MicDSP::read(int16_t *output,
         // Noise Suppression
         WebRtcNs_Analyze(_ns, nsIn);
         WebRtcNs_Process(_ns, (const int16_t* const*)nsInPtr, 1, nsOutPtr);
-
+ // VAD
+        if (fvad_process(_fvad, frameOut, fs) == 1)
+            speechFrames++;
         // AGC
         if (agcEnabled) {
             int32_t inMicLevel = 0, outMicLevel = 0;
@@ -185,10 +187,6 @@ esp_err_t MicDSP::read(int16_t *output,
                               echo,
                               &saturationWarning);
         }
-
-        // VAD
-        if (fvad_process(_fvad, frameOut, fs) == 1)
-            speechFrames++;
     }
 
     // VAD percentage >50% means speech present
@@ -201,3 +199,4 @@ esp_err_t MicDSP::read(int16_t *output,
 
     return ESP_OK;
 }
+
